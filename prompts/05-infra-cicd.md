@@ -1,0 +1,2 @@
+Ajoute le pipeline CI/CD qui gère le cycle de vie de cette infrastructure, selon l'état de l'art : validation et plan sur les pull requests, application sur merge vers la branche principale. L'authentification à GCP doit passer par Workload Identity Federation en OIDC, sans aucune clé de service stockée.
+Rappelle-toi la distinction des deux pipelines du CLAUDE.md : ici on gère uniquement l'infra, pas le déploiement applicatif. Mets à jour docs/progress.md et commit.

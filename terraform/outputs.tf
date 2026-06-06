@@ -207,3 +207,27 @@ output "app_deploy_sa_email" {
   value       = module.cicd.deploy_sa_email
   description = "Deploy SA email the app pipeline impersonates via WIF. No key — federation only."
 }
+
+# ----------------------------------------------------------------------------
+# Infra CI/CD (this pipeline)
+# ----------------------------------------------------------------------------
+
+output "infra_workload_identity_provider" {
+  value       = module.infra_cicd.workload_identity_provider
+  description = "WIF provider used by the infra repo's terraform-checks / terraform-apply workflows. Set as the per-env GitHub variable TF_WIF_PROVIDER_{DEV,PROD}."
+}
+
+output "infra_plan_sa_email" {
+  value       = module.infra_cicd.plan_sa_email
+  description = "Read-only SA the PR workflow impersonates. GitHub variable TF_PLAN_SA_{DEV,PROD}."
+}
+
+output "infra_apply_sa_email" {
+  value       = module.infra_cicd.apply_sa_email
+  description = "Admin SA the main-branch apply workflow impersonates. GitHub variable TF_APPLY_SA_{DEV,PROD}."
+}
+
+output "state_bucket_name" {
+  value       = local.state_bucket_name
+  description = "Name of the GCS state bucket for the current environment."
+}

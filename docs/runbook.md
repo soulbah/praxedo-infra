@@ -212,6 +212,76 @@ pre-commit run --all-files
 Hooks: `terraform_fmt`, `terraform_validate`, `terraform_tflint`,
 `terraform_trivy` (HIGH/CRITICAL only). Failures block the commit.
 
+### 8.1 Infra CI pipeline (.github/workflows/)
+
+Three workflows manage this repo's lifecycle. **Distinct from the app
+pipeline** (CLAUDE.md): they manage infrastructure only, never deploy
+application code.
+
+| Workflow | Trigger | SA | Branch lock |
+|---|---|---|---|
+| `terraform-checks.yml` | `pull_request` to main, `workflow_dispatch` | `infra-plan` (read-only) | repo-scoped, any branch |
+| `terraform-apply-dev.yml` | `push` to main, `workflow_dispatch` | `infra-apply` (admin) | WIF binding restricts to `refs/heads/main` |
+| `terraform-apply-prod.yml` | `workflow_dispatch` with `confirm=apply-prod` | `infra-apply` (admin, prod project) | WIF binding restricts to `refs/heads/main` + GitHub Environment `prod` requires reviewer approval |
+
+Fork PRs are explicitly excluded from the plan job (`if: head.repo == repo`)
+so untrusted code never receives an OIDC token.
+
+### 8.2 Bootstrap (one-time per project)
+
+The infra CI pipeline is created **by Terraform itself** — chicken/egg.
+First apply must run from a human with project owner / equivalent
+permissions:
+
+```sh
+# Authenticate locally as an account that holds project owner on
+# praxedo-file-<env>.
+gcloud auth application-default login
+gcloud config set project praxedo-file-dev
+
+# Create the state bucket (see §2).
+# Then run the very first apply locally.
+make init   ENV=dev
+make apply  ENV=dev
+```
+
+After this first apply, the `infra_workload_identity_provider`,
+`infra_plan_sa_email`, `infra_apply_sa_email`, and `state_bucket_name`
+outputs identify everything the CI workflows need. Configure these as
+**GitHub repository / organization variables** (Settings → Secrets and
+variables → Actions → Variables):
+
+| GitHub variable | Source | Used by |
+|---|---|---|
+| `TF_PROJECT_ID_DEV` | literal `praxedo-file-dev` | all infra workflows |
+| `TF_PROJECT_ID_PROD` | literal `praxedo-file-prod` | all infra workflows |
+| `TF_WIF_PROVIDER_DEV` | `terraform output infra_workload_identity_provider` (dev workspace) | checks + apply-dev |
+| `TF_WIF_PROVIDER_PROD` | same, prod workspace | checks + apply-prod |
+| `TF_PLAN_SA_DEV` | `terraform output infra_plan_sa_email` (dev) | checks |
+| `TF_PLAN_SA_PROD` | same, prod | checks |
+| `TF_APPLY_SA_DEV` | `terraform output infra_apply_sa_email` (dev) | apply-dev |
+| `TF_APPLY_SA_PROD` | same, prod | apply-prod |
+
+After variables are set, push to main triggers `apply-dev` and the CI
+pipeline takes over. Subsequent local `terraform apply` is reserved for
+emergencies; the GitHub-side audit trail beats it.
+
+### 8.3 Prod safeguards
+
+Three independent gates before a prod apply executes:
+
+1. **Manual dispatch**: `terraform-apply-prod` is `workflow_dispatch`
+   only, never auto-triggered.
+2. **Confirmation input**: dispatch requires typing `apply-prod` in the
+   `confirm` field.
+3. **GitHub Environment**: the job declares `environment: prod`, so the
+   reviewers configured on that environment must approve before the
+   runner starts.
+4. **WIF branch lock**: even if all GitHub gates were misconfigured, the
+   apply SA's `workloadIdentityUser` binding only accepts OIDC tokens
+   whose `assertion.ref == refs/heads/main`. A branch checkout from any
+   other ref fails authentication.
+
 ---
 
 ## 9. Known scoped exceptions

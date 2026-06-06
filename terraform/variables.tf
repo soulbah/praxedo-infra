@@ -229,3 +229,23 @@ variable "github_repo" {
   type        = string
   description = "GitHub repository name allowed to federate against this pool."
 }
+
+# ----------------------------------------------------------------------------
+# Infra repo CI/CD (this pipeline)
+# ----------------------------------------------------------------------------
+
+variable "infra_github_owner" {
+  type        = string
+  description = "GitHub owner of the infra repo (this repo). Separate from var.github_owner so the app pipeline cannot impersonate infra identities."
+}
+
+variable "infra_github_repo" {
+  type        = string
+  description = "GitHub repository name of the infra repo (this repo)."
+}
+
+variable "infra_apply_branch" {
+  type        = string
+  description = "Branch whose pushes are allowed to impersonate the infra apply SA. WIF-level branch lock."
+  default     = "main"
+}

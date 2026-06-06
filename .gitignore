@@ -44,6 +44,11 @@ terraform.rc
 !*.example.tfvars
 !terraform.tfvars.example
 
+# Env tfvars under terraform/envs/ are checked in: they hold non-secret
+# config only (project IDs, domains, repo names). Secrets live in Secret
+# Manager.
+!terraform/envs/*.tfvars
+
 # Auto-loaded vars
 *.auto.tfvars
 *.auto.tfvars.json

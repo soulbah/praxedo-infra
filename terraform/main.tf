@@ -4,6 +4,10 @@ locals {
   # downstream resource name distinct across environments without an extra
   # suffix.
   name_prefix = var.project_id
+
+  # State bucket convention. Bootstrap step in docs/runbook.md creates it
+  # out of band; the infra-cicd module IAM-binds the SAs onto it.
+  state_bucket_name = "${var.project_id}-tfstate"
 }
 
 module "network" {
@@ -183,6 +187,18 @@ module "cicd" {
   api_sa_name                     = module.service_accounts.api_sa_name
   scanner_sa_name                 = module.service_accounts.scanner_sa_name
   frontend_bucket_name            = module.edge.frontend_bucket_name
+
+  depends_on = [google_project_service.enabled]
+}
+
+module "infra_cicd" {
+  source = "./modules/infra-cicd"
+
+  project_id        = var.project_id
+  github_owner      = var.infra_github_owner
+  github_repo       = var.infra_github_repo
+  state_bucket_name = local.state_bucket_name
+  apply_branch      = var.infra_apply_branch
 
   depends_on = [google_project_service.enabled]
 }

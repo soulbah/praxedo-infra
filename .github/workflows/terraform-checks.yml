@@ -1,0 +1,155 @@
+# Pull-request checks for the infra repo.
+# fmt + validate + plan against every environment. Plan output is posted as
+# a sticky PR comment per env.
+#
+# Auth: WIF OIDC, impersonating the per-env infra-plan SA (read-only roles).
+# No service-account keys.
+
+name: Terraform — PR checks
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform-*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write       # required for WIF OIDC token issuance
+  pull-requests: write  # required to post the plan comment
+
+concurrency:
+  group: tf-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: "1.12.2"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Static checks — fast, no GCP credentials needed.
+  # ------------------------------------------------------------------------
+  fmt-validate:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+    # Don't run for PRs from forks: they would otherwise get an OIDC token
+    # in the plan job, which we never want for untrusted code.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        working-directory: terraform
+        run: terraform fmt -recursive -check -diff
+
+      - name: terraform init (offline)
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        working-directory: terraform
+        run: terraform validate
+
+  # ------------------------------------------------------------------------
+  # Plan per environment.
+  # ------------------------------------------------------------------------
+  plan:
+    name: plan (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    needs: fmt-validate
+    if: github.event.pull_request.head.repo.full_name == github.repository
+
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Authenticate to GCP via WIF
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars[format('TF_WIF_PROVIDER_{0}', matrix.env)] }}
+          service_account: ${{ vars[format('TF_PLAN_SA_{0}', matrix.env)] }}
+
+      - name: terraform init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars[format('TF_PROJECT_ID_{0}', matrix.env)] }}-tfstate" \
+            -backend-config="prefix=praxedo-infra"
+
+      - name: terraform workspace select
+        working-directory: terraform
+        run: |
+          terraform workspace select ${{ matrix.env }} \
+            || terraform workspace new ${{ matrix.env }}
+
+      - name: terraform plan
+        id: plan
+        working-directory: terraform
+        run: |
+          set -o pipefail
+          terraform plan \
+            -no-color \
+            -lock-timeout=120s \
+            -var-file=envs/${{ matrix.env }}.tfvars \
+            -out=tfplan \
+            | tee plan-${{ matrix.env }}.txt
+
+      - name: Render plan summary
+        id: render
+        working-directory: terraform
+        run: |
+          # Trim the plan output for the comment so we stay under GitHub's
+          # 65k-char body limit.
+          plan_body=$(tail -c 60000 plan-${{ matrix.env }}.txt)
+          {
+            echo 'plan<<EOF_PLAN'
+            echo "$plan_body"
+            echo 'EOF_PLAN'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find prior plan comment
+        uses: peter-evans/find-comment@v3
+        id: prior
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- tf-plan:${{ matrix.env }} -->"
+
+      - name: Upsert plan comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.prior.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            <!-- tf-plan:${{ matrix.env }} -->
+            ### Terraform plan — `${{ matrix.env }}`
+
+            Commit: `${{ github.event.pull_request.head.sha }}`
+
+            <details>
+            <summary>Show plan</summary>
+
+            ```hcl
+            ${{ steps.render.outputs.plan }}
+            ```
+
+            </details>
