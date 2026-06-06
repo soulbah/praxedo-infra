@@ -1,0 +1,5 @@
+Lis le CLAUDE.md avant de répondre. Avant d'écrire la moindre ligne de code, on cadre l'architecture ensemble.
+Propose une architecture GCP pour ce service en respectant le principe de dimensionnement juste. Pour chaque service que tu retiens, justifie le choix en une ou deux phrases et indique l'alternative que tu écartes, avec la raison.
+Traite explicitement les trois enjeux : les uploads jusqu'à plusieurs centaines de Mo, la résilience face à l'API antivirus tierce (lenteur, panne, indisponibilité), et l'invariant selon lequel un fichier non scanné clean ne doit jamais être téléchargeable — précise par quel mécanisme technique l'architecture le garantit.
+Écris le résultat dans docs/architecture.md, structuré ainsi : une section par décision (choix / alternative écartée / justification), une section dédiée aux trois enjeux, et une section Hypothèses listées explicitement. Ce document fera référence pour toutes les étapes suivantes.
+Crée aussi docs/progress.md avec la liste des étapes du projet et leur statut ; marque le cadrage comme en cours. Ne génère aucun Terraform pour l'instant.
