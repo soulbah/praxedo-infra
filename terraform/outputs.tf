@@ -93,3 +93,84 @@ output "clean_bucket_name" {
   value       = module.storage.clean_bucket_name
   description = "Clean bucket name."
 }
+
+# ----------------------------------------------------------------------------
+# Secrets
+# ----------------------------------------------------------------------------
+
+output "db_password_secret_id" {
+  value       = module.secrets.db_password_secret_id
+  description = "Resource ID of the DB password secret."
+}
+
+output "av_api_key_secret_id" {
+  value       = module.secrets.av_api_key_secret_id
+  description = "Resource ID of the AV API key secret. Populate the value out of band with `gcloud secrets versions add`."
+}
+
+# ----------------------------------------------------------------------------
+# Database
+# ----------------------------------------------------------------------------
+
+output "db_instance_name" {
+  value       = module.database.instance_name
+  description = "Cloud SQL instance name."
+}
+
+output "db_instance_connection_name" {
+  value       = module.database.instance_connection_name
+  description = "Cloud SQL connection name (project:region:instance)."
+}
+
+output "db_private_ip" {
+  value       = module.database.private_ip
+  description = "Private IP of the Cloud SQL instance (consumed by Cloud Run env vars)."
+}
+
+# ----------------------------------------------------------------------------
+# Compute
+# ----------------------------------------------------------------------------
+
+output "api_service_name" {
+  value       = module.compute.api_service_name
+  description = "Cloud Run service name for the API."
+}
+
+output "api_service_uri" {
+  value       = module.compute.api_service_uri
+  description = "Cloud Run URI for the API service."
+}
+
+output "scanner_service_name" {
+  value       = module.compute.scanner_service_name
+  description = "Cloud Run service name for the scanner."
+}
+
+output "scanner_service_uri" {
+  value       = module.compute.scanner_service_uri
+  description = "Cloud Run URI for the scanner service (Pub/Sub push target)."
+}
+
+# ----------------------------------------------------------------------------
+# Eventing
+# ----------------------------------------------------------------------------
+
+output "scan_requests_topic_name" {
+  value       = module.eventing.scan_requests_topic_name
+  description = "Main Pub/Sub topic for scan requests."
+}
+
+output "scan_dlq_topic_name" {
+  value       = module.eventing.scan_dlq_topic_name
+  description = "Dead-letter topic for failed scans."
+}
+
+output "scan_requests_subscription_name" {
+  value       = module.eventing.scan_requests_subscription_name
+  description = "Push subscription targeting the scanner."
+}
+
+output "scan_dlq_subscription_name" {
+  value       = module.eventing.scan_dlq_subscription_name
+  description = "Pull subscription on the DLQ for operator triage."
+}

@@ -113,3 +113,85 @@ variable "registry_untagged_retention_seconds" {
   description = "Age (seconds) above which untagged images are deleted."
   default     = 604800
 }
+
+# ----------------------------------------------------------------------------
+# Database
+# ----------------------------------------------------------------------------
+
+variable "db_tier" {
+  type        = string
+  description = "Cloud SQL machine tier. Smallest custom tier covers the expected metadata workload."
+  default     = "db-custom-1-3840"
+}
+
+variable "db_availability_type" {
+  type        = string
+  description = "ZONAL for dev / cost; REGIONAL for prod HA."
+  default     = "ZONAL"
+}
+
+variable "db_disk_size_gb" {
+  type        = number
+  description = "Initial Cloud SQL disk size in GiB. Disk autoresize is enabled."
+  default     = 20
+}
+
+variable "db_deletion_protection" {
+  type        = bool
+  description = "Cloud SQL deletion protection. Keep true in prod; can be relaxed in dev tfvars."
+  default     = true
+}
+
+variable "db_name" {
+  type        = string
+  description = "Application database name."
+  default     = "praxedo"
+}
+
+variable "db_user" {
+  type        = string
+  description = "Application database user."
+  default     = "praxedo_app"
+}
+
+# ----------------------------------------------------------------------------
+# Compute (Cloud Run)
+# ----------------------------------------------------------------------------
+
+variable "api_image" {
+  type        = string
+  description = "Initial API container image. Overwritten by the app pipeline (ignored by lifecycle)."
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
+}
+
+variable "scanner_image" {
+  type        = string
+  description = "Initial scanner container image. Overwritten by the app pipeline."
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
+}
+
+variable "api_max_instances" {
+  type    = number
+  default = 10
+}
+
+variable "scanner_max_instances" {
+  type    = number
+  default = 5
+}
+
+variable "scanner_timeout_seconds" {
+  type        = number
+  description = "Per-request timeout for the scanner service. Sized for slow AV calls; matches Pub/Sub ack_deadline."
+  default     = 600
+}
+
+# ----------------------------------------------------------------------------
+# Observability
+# ----------------------------------------------------------------------------
+
+variable "alert_email" {
+  type        = string
+  description = "Recipient address for the email notification channel. Empty string leaves alerts wired but silent."
+  default     = ""
+}
