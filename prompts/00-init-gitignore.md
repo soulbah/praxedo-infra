@@ -1,0 +1,1 @@
+Initialise ce dépôt Git. Génère un .gitignore complet et adapté à un projet Terraform sur GCP : exclus le state local, les fichiers .terraform/, les .tfvars (sauf un éventuel example.tfvars), les fichiers de lock de crash, et tout ce qui pourrait contenir des secrets ou des credentials. Fais un premier commit chore: initial commit with gitignore.
