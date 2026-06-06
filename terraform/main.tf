@@ -158,3 +158,31 @@ module "observability" {
 
   depends_on = [google_project_service.enabled]
 }
+
+module "edge" {
+  source = "./modules/edge"
+
+  project_id       = var.project_id
+  region           = var.region
+  name_prefix      = local.name_prefix
+  api_service_name = module.compute.api_service_name
+  domains          = var.domains
+  api_path_prefix  = var.api_path_prefix
+
+  depends_on = [google_project_service.enabled]
+}
+
+module "cicd" {
+  source = "./modules/cicd"
+
+  project_id                      = var.project_id
+  region                          = var.region
+  github_owner                    = var.github_owner
+  github_repo                     = var.github_repo
+  artifact_registry_repository_id = module.artifact_registry.repository_id
+  api_sa_name                     = module.service_accounts.api_sa_name
+  scanner_sa_name                 = module.service_accounts.scanner_sa_name
+  frontend_bucket_name            = module.edge.frontend_bucket_name
+
+  depends_on = [google_project_service.enabled]
+}

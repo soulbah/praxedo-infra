@@ -174,3 +174,36 @@ output "scan_dlq_subscription_name" {
   value       = module.eventing.scan_dlq_subscription_name
   description = "Pull subscription on the DLQ for operator triage."
 }
+
+# ----------------------------------------------------------------------------
+# Edge
+# ----------------------------------------------------------------------------
+
+output "lb_ip_address" {
+  value       = module.edge.lb_ip_address
+  description = "Global LB IP. Point each domain's DNS A record here."
+}
+
+output "frontend_bucket_name" {
+  value       = module.edge.frontend_bucket_name
+  description = "Bucket the app pipeline uploads the built SPA to."
+}
+
+output "managed_ssl_certificate_name" {
+  value       = module.edge.managed_ssl_certificate_name
+  description = "Name of the managed SSL certificate."
+}
+
+# ----------------------------------------------------------------------------
+# CI/CD
+# ----------------------------------------------------------------------------
+
+output "workload_identity_provider" {
+  value       = module.cicd.workload_identity_provider
+  description = "WIF provider full resource name. Consumed by google-github-actions/auth in the application repo."
+}
+
+output "app_deploy_sa_email" {
+  value       = module.cicd.deploy_sa_email
+  description = "Deploy SA email the app pipeline impersonates via WIF. No key — federation only."
+}

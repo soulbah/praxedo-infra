@@ -195,3 +195,37 @@ variable "alert_email" {
   description = "Recipient address for the email notification channel. Empty string leaves alerts wired but silent."
   default     = ""
 }
+
+# ----------------------------------------------------------------------------
+# Edge (LB + CDN + frontend bucket)
+# ----------------------------------------------------------------------------
+
+variable "domains" {
+  type        = list(string)
+  description = "FQDNs attached to the managed SSL certificate. Must be non-empty; the operator points DNS A records at the LB IP to allow the cert to provision."
+
+  validation {
+    condition     = length(var.domains) > 0
+    error_message = "domains must contain at least one FQDN."
+  }
+}
+
+variable "api_path_prefix" {
+  type        = string
+  description = "Path prefix routed to the API backend service."
+  default     = "/api"
+}
+
+# ----------------------------------------------------------------------------
+# CI/CD (Workload Identity Federation)
+# ----------------------------------------------------------------------------
+
+variable "github_owner" {
+  type        = string
+  description = "GitHub organization or user that owns the application repository."
+}
+
+variable "github_repo" {
+  type        = string
+  description = "GitHub repository name allowed to federate against this pool."
+}
