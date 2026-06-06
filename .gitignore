@@ -1,0 +1,126 @@
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+
+# Local .terraform directories
+**/.terraform/*
+.terraform/
+.terraform.lock.hcl.bak
+
+# Terraform state files (local)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Plan output files
+*.tfplan
+*.tfplan.*
+plan.out
+tfplan
+tfplan.binary
+
+# Override files (typically used for local overrides)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration files
+.terraformrc
+terraform.rc
+
+# ---------------------------------------------------------------------------
+# Secrets & variables
+# ---------------------------------------------------------------------------
+
+# tfvars may contain secrets — ignore all by default
+*.tfvars
+*.tfvars.json
+!example.tfvars
+!*.example.tfvars
+!terraform.tfvars.example
+
+# Auto-loaded vars
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Generic secrets / credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+secrets/
+secret/
+secrets.*
+*.secret
+*.secrets
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# GCP service account keys / credentials
+*-sa.json
+*service-account*.json
+*credentials*.json
+*-key.json
+gcp-key*.json
+key.json
+keyfile.json
+application_default_credentials.json
+.gcloud/
+.config/gcloud/
+
+# SSH keys
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.pub
+
+# ---------------------------------------------------------------------------
+# Editors / IDE
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ---------------------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------------------
+# Logs / temp
+# ---------------------------------------------------------------------------
+*.log
+*.tmp
+*.bak
+*.backup
+*.orig
+
+# ---------------------------------------------------------------------------
+# Tooling
+# ---------------------------------------------------------------------------
+# terragrunt cache
+.terragrunt-cache/
+
+# terraform-docs / tflint / tfsec / checkov outputs
+.tflint.d/
+.tfsec/
+.checkov.yml.local
