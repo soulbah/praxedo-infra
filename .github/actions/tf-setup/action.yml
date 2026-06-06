@@ -1,0 +1,67 @@
+# Composite action: install Terraform, authenticate to GCP via WIF, init the
+# backend, and select the env workspace. Used by every terraform-* workflow
+# so the auth/init boilerplate lives in one place.
+#
+# Requires the following GitHub Actions variables to be set per env:
+#   TF_PROJECT_ID_<ENV>       (literal project id, e.g. praxedo-file-dev)
+#   TF_WIF_PROVIDER_<ENV>     (full WIF provider resource name)
+#   TF_PLAN_SA_<ENV>          (plan SA email)   — when sa-type=plan
+#   TF_APPLY_SA_<ENV>         (apply SA email)  — when sa-type=apply
+
+name: Terraform setup (auth + init + workspace)
+description: Install Terraform, federate to GCP via WIF, init backend, select workspace.
+
+inputs:
+  env:
+    description: Environment slug (dev|prod). Matches the terraform workspace.
+    required: true
+  sa-type:
+    description: Which runtime SA to impersonate via WIF — "plan" or "apply".
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        # Single source of truth for the Terraform version.
+        terraform_version_file: .terraform-version
+        terraform_wrapper: false
+
+    - name: Resolve env-specific variables
+      id: vars
+      shell: bash
+      env:
+        ENV_UPPER: ${{ inputs.env }}
+        SA_TYPE_UPPER: ${{ inputs.sa-type }}
+      run: |
+        env_u=$(echo "$ENV_UPPER" | tr '[:lower:]' '[:upper:]')
+        sa_u=$(echo "$SA_TYPE_UPPER" | tr '[:lower:]' '[:upper:]')
+        echo "env_upper=$env_u"               >> "$GITHUB_OUTPUT"
+        echo "wif_var=TF_WIF_PROVIDER_$env_u" >> "$GITHUB_OUTPUT"
+        echo "sa_var=TF_${sa_u}_SA_$env_u"    >> "$GITHUB_OUTPUT"
+        echo "proj_var=TF_PROJECT_ID_$env_u"  >> "$GITHUB_OUTPUT"
+
+    - name: Authenticate to GCP via WIF
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ vars[steps.vars.outputs.wif_var] }}
+        service_account: ${{ vars[steps.vars.outputs.sa_var] }}
+
+    - name: terraform init
+      shell: bash
+      working-directory: terraform
+      env:
+        BUCKET: ${{ vars[steps.vars.outputs.proj_var] }}-tfstate
+      run: |
+        terraform init \
+          -backend-config="bucket=${BUCKET}" \
+          -backend-config="prefix=praxedo-infra"
+
+    - name: terraform workspace select
+      shell: bash
+      working-directory: terraform
+      env:
+        WS: ${{ inputs.env }}
+      run: terraform workspace select "${WS}" || terraform workspace new "${WS}"

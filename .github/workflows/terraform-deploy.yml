@@ -1,0 +1,263 @@
+# Deploy workflow — push to main triggers per-env plan → GH Environment gate
+# → apply against the frozen tfplan artifact.
+#
+# Why a frozen plan?
+#   * The reviewer approves a specific diff, not a future re-plan that could
+#     have drifted between approval and apply.
+#   * Apply consumes `terraform apply tfplan` — no drift between approve
+#     and execute.
+#
+# Gates on each apply (independently configurable per GH Environment):
+#   * Required reviewers
+#   * Wait timer
+#   * Deployment branches policy (defence-in-depth alongside the WIF lock)
+#
+# WIF binding on the apply SA pins to refs/heads/main, so even if all
+# GitHub-side gates were misconfigured, only a main checkout can mint an
+# apply token.
+
+name: Terraform — deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".terraform-version"
+      - ".github/workflows/terraform-deploy.yml"
+      - ".github/actions/tf-setup/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  # ========================================================================
+  # DEV — plan → environment-gated apply.
+  # ========================================================================
+  plan-dev:
+    name: plan dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: tf-plan-dev
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      exitcode: ${{ steps.plan.outputs.exitcode }}
+      sha: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform + auth (plan SA, dev)
+        uses: ./.github/actions/tf-setup
+        with:
+          env: dev
+          sa-type: plan
+
+      - name: terraform plan
+        id: plan
+        working-directory: terraform
+        shell: bash
+        run: |
+          set +e
+          terraform plan \
+            -no-color \
+            -lock-timeout=120s \
+            -var-file=envs/dev.tfvars \
+            -out=tfplan \
+            -detailed-exitcode \
+            > plan-dev.txt 2>&1
+          rc=$?
+          set -e
+          echo "exitcode=${rc}" >> "$GITHUB_OUTPUT"
+          tail -n 200 plan-dev.txt
+          case $rc in
+            0) echo "::notice::No changes for dev — apply will be skipped" ;;
+            2) echo "::notice::Plan for dev has changes" ;;
+            *) echo "::error::Plan for dev failed (exit $rc)"; exit $rc ;;
+          esac
+
+      - name: Job summary — plan diff (dev)
+        if: always()
+        working-directory: terraform
+        shell: bash
+        run: |
+          {
+            echo "## Terraform plan — \`dev\`"
+            echo
+            echo '```hcl'
+            tail -c 900000 plan-dev.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact (dev)
+        if: steps.plan.outputs.exitcode == '2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-dev-${{ github.sha }}
+          path: terraform/tfplan
+          retention-days: 1
+
+  apply-dev:
+    name: apply dev
+    needs: plan-dev
+    if: needs.plan-dev.outputs.exitcode == '2'
+    # GH Environment gate: required reviewers / wait timer / branch policy
+    # configured on the GitHub side. The workflow itself enforces nothing
+    # specific; the platform does. This is the right separation.
+    environment: dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: tf-apply-dev
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev-${{ needs.plan-dev.outputs.sha }}
+          path: terraform/
+
+      - name: Setup Terraform + auth (apply SA, dev)
+        uses: ./.github/actions/tf-setup
+        with:
+          env: dev
+          sa-type: apply
+
+      - name: terraform apply (frozen plan)
+        working-directory: terraform
+        # Applying a saved plan: no -var-file, no -auto-approve flag needed
+        # (a saved plan implies approval; the gate above is the human one).
+        run: terraform apply -lock-timeout=600s tfplan
+
+  # ========================================================================
+  # PROD — plan → environment-gated apply, gated additionally on dev apply
+  # success (strict promotion).
+  # ========================================================================
+  plan-prod:
+    name: plan prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: tf-plan-prod
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      exitcode: ${{ steps.plan.outputs.exitcode }}
+      sha: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform + auth (plan SA, prod)
+        uses: ./.github/actions/tf-setup
+        with:
+          env: prod
+          sa-type: plan
+
+      - name: terraform plan
+        id: plan
+        working-directory: terraform
+        shell: bash
+        run: |
+          set +e
+          terraform plan \
+            -no-color \
+            -lock-timeout=120s \
+            -var-file=envs/prod.tfvars \
+            -out=tfplan \
+            -detailed-exitcode \
+            > plan-prod.txt 2>&1
+          rc=$?
+          set -e
+          echo "exitcode=${rc}" >> "$GITHUB_OUTPUT"
+          tail -n 200 plan-prod.txt
+          case $rc in
+            0) echo "::notice::No changes for prod — apply will be skipped" ;;
+            2) echo "::notice::Plan for prod has changes" ;;
+            *) echo "::error::Plan for prod failed (exit $rc)"; exit $rc ;;
+          esac
+
+      - name: Job summary — plan diff (prod)
+        if: always()
+        working-directory: terraform
+        shell: bash
+        run: |
+          {
+            echo "## Terraform plan — \`prod\`"
+            echo
+            echo '```hcl'
+            tail -c 900000 plan-prod.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact (prod)
+        if: steps.plan.outputs.exitcode == '2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod-${{ github.sha }}
+          path: terraform/tfplan
+          retention-days: 1
+
+  apply-prod:
+    name: apply prod
+    # Strict promotion: prod apply only runs after dev applied successfully.
+    # If dev had no changes (exitcode 0), apply-dev was skipped, which would
+    # block prod under a plain `needs`. We bypass that by gating on `result`.
+    needs: [plan-prod, apply-dev]
+    if: |
+      needs.plan-prod.outputs.exitcode == '2' &&
+      (needs.apply-dev.result == 'success' || needs.apply-dev.result == 'skipped')
+    environment: prod
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: tf-apply-prod
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Belt-and-braces alongside the WIF branch lock.
+          ref: main
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod-${{ needs.plan-prod.outputs.sha }}
+          path: terraform/
+
+      - name: Setup Terraform + auth (apply SA, prod)
+        uses: ./.github/actions/tf-setup
+        with:
+          env: prod
+          sa-type: apply
+
+      - name: terraform apply (frozen plan)
+        working-directory: terraform
+        run: terraform apply -lock-timeout=600s tfplan

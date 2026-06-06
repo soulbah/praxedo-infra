@@ -214,18 +214,57 @@ Hooks: `terraform_fmt`, `terraform_validate`, `terraform_tflint`,
 
 ### 8.1 Infra CI pipeline (.github/workflows/)
 
-Three workflows manage this repo's lifecycle. **Distinct from the app
+Two workflows manage this repo's lifecycle. **Distinct from the app
 pipeline** (CLAUDE.md): they manage infrastructure only, never deploy
 application code.
 
-| Workflow | Trigger | SA | Branch lock |
-|---|---|---|---|
-| `terraform-checks.yml` | `pull_request` to main, `workflow_dispatch` | `infra-plan` (read-only) | repo-scoped, any branch |
-| `terraform-apply-dev.yml` | `push` to main, `workflow_dispatch` | `infra-apply` (admin) | WIF binding restricts to `refs/heads/main` |
-| `terraform-apply-prod.yml` | `workflow_dispatch` with `confirm=apply-prod` | `infra-apply` (admin, prod project) | WIF binding restricts to `refs/heads/main` + GitHub Environment `prod` requires reviewer approval |
+| Workflow | Trigger | Pattern |
+|---|---|---|
+| `terraform-checks.yml` | `pull_request`, `workflow_dispatch` | fmt + validate + tflint + Trivy (HIGH/CRITICAL) → plan dev/prod in parallel → sticky PR comment + Job Summary with full diff + uploaded `tfplan` artifact |
+| `terraform-deploy.yml` | `push` to main, `workflow_dispatch` | per env: plan job → **GH Environment gate (manual approval)** → apply job that consumes the *frozen* `tfplan` artifact. Prod waits on dev apply success (strict promotion) |
 
-Fork PRs are explicitly excluded from the plan job (`if: head.repo == repo`)
-so untrusted code never receives an OIDC token.
+Shared boilerplate lives in `.github/actions/tf-setup` (composite action):
+install Terraform from `.terraform-version`, federate to GCP via WIF
+(plan SA or apply SA), `terraform init` with the env-specific state
+bucket, select the workspace.
+
+Fork PRs are excluded from any job that requires an OIDC token
+(`if: head.repo == repo`).
+
+#### Plan-then-approve-then-apply
+
+The deploy workflow uploads the binary `tfplan` between the plan and
+apply jobs. Apply consumes `terraform apply tfplan` — no `-var-file`,
+no `-auto-approve` flag — so the reviewer approves the exact diff that
+runs. State cannot drift between approval and execution.
+
+The reviewer sees the full plan diff in the **Job Summary** of the
+plan job before approving the apply job. The approval gate is the GH
+Environment configured on the apply job (`environment: dev` /
+`environment: prod`).
+
+Configure on the GitHub side (Settings → Environments):
+- `dev`: optional reviewers, no wait timer, deployment branches = `main`.
+- `prod`: **required reviewers (≥1)**, optional wait timer, deployment
+  branches = `main`.
+
+#### `detailed-exitcode` short-circuit
+
+`terraform plan -detailed-exitcode` returns 0 (no changes), 1 (error),
+2 (changes). The apply job has `if: needs.plan.outputs.exitcode == '2'`
+so a no-op plan skips apply entirely — saves CI minutes and produces
+a cleaner audit trail when there's nothing to do.
+
+#### Permissions per job
+
+Workflow-level permissions = `contents: read`. Each job widens only
+what it needs:
+- plan jobs: `id-token: write` (WIF token)
+- PR plan comment step: `pull-requests: write`
+- apply jobs: `id-token: write` only
+
+No job ever gets `write-all` or anything broader than the action
+actually performs.
 
 ### 8.2 Bootstrap (one-time per project)
 
@@ -268,19 +307,48 @@ emergencies; the GitHub-side audit trail beats it.
 
 ### 8.3 Prod safeguards
 
-Three independent gates before a prod apply executes:
+Four independent gates before a prod apply executes — defence-in-depth,
+so a single misconfiguration cannot bypass the rest:
 
-1. **Manual dispatch**: `terraform-apply-prod` is `workflow_dispatch`
-   only, never auto-triggered.
-2. **Confirmation input**: dispatch requires typing `apply-prod` in the
-   `confirm` field.
-3. **GitHub Environment**: the job declares `environment: prod`, so the
-   reviewers configured on that environment must approve before the
-   runner starts.
-4. **WIF branch lock**: even if all GitHub gates were misconfigured, the
-   apply SA's `workloadIdentityUser` binding only accepts OIDC tokens
-   whose `assertion.ref == refs/heads/main`. A branch checkout from any
-   other ref fails authentication.
+1. **Frozen plan**: apply consumes the binary `tfplan` artifact uploaded
+   by the prod plan job. The reviewer approves a specific diff, not a
+   re-plan that could drift between approval and execution.
+2. **GitHub Environment `prod`**: required reviewers configured on the
+   environment must approve the apply job. The plan diff is rendered in
+   the plan job's Job Summary so the reviewer sees the exact change
+   before approving.
+3. **Strict promotion**: `apply-prod` declares
+   `needs: [plan-prod, apply-dev]`. Prod cannot run until dev apply
+   succeeded (or was skipped because dev had no changes).
+4. **WIF branch lock**: the apply SA's `workloadIdentityUser` binding
+   only accepts OIDC tokens whose `assertion.ref == refs/heads/main`.
+   Even if all GitHub-side gates were bypassed, a checkout from a
+   non-main ref fails authentication.
+
+### 8.4 What to do when CI breaks
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Permission denied` on `terraform init` | State bucket IAM not yet propagated, or the SA was rotated | wait 30s and retry; or re-run after `terraform apply` of `modules/infra-cicd` |
+| `Unable to fetch the OIDC token` | `id-token: write` missing on the job, or fork PR | check job permissions, ensure PR is from same repo |
+| Plan job posts plan but apply job stays pending | Awaiting GH Environment reviewer approval | reviewer goes to Actions → workflow run → click "Review deployments" |
+| Apply fails with `state lock` | Previous apply crashed without releasing the lock | `terraform force-unlock <LOCK_ID>` from a local checkout (record the LOCK_ID from the error; never blindly unlock without confirming the previous run actually died) |
+
+### 8.5 Local emergency apply
+
+When CI is down and a change is urgent:
+
+```sh
+# Authenticate locally as a human with sufficient roles (project owner or
+# the same role list held by the apply SA).
+gcloud auth application-default login
+gcloud config set project praxedo-file-<env>
+
+make apply ENV=<env>
+```
+
+Every emergency apply must be backfilled with a PR + normal CI run to
+restore the audit trail.
 
 ---
 
