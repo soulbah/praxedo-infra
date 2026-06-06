@@ -1,0 +1,3 @@
+Reprends à partir de @docs/architecture.md. Le design est validé, on commence l'implémentation.
+Mets en place les fondations Terraform : configuration des providers avec versions épinglées, backend de state distant sur GCS, variables de base du projet, et activation des APIs GCP nécessaires d'après l'architecture documentée. Respecte le skill terraform-gcp. Assure-toi que terraform fmt et terraform validate passent. Chaque environnement devrait être aligné à un workspace terraform. 
+Mets à jour docs/progress.md et commit l'étape.
