@@ -1,0 +1,25 @@
+# Review requirements for security-sensitive paths.
+# Wildcard default: any infra change needs at least one infra-team review.
+# Specific paths layer additional reviewers on top — GitHub takes the
+# most-specific match.
+
+# Default owner: every PR touching this repo needs one infra-team review.
+*                                       @praxedo/infra
+
+# Security-sensitive modules — IAM split enforces the §2.3 invariant; the
+# §2.2 resilience contract lives in eventing/observability. Any diff here
+# must be approved by the security review group on top of infra-team.
+terraform/modules/storage/              @praxedo/infra @praxedo/security
+terraform/modules/secrets/              @praxedo/infra @praxedo/security
+terraform/modules/service-accounts/     @praxedo/infra @praxedo/security
+terraform/modules/cicd/                 @praxedo/infra @praxedo/security
+terraform/modules/infra-cicd/           @praxedo/infra @praxedo/security
+terraform/modules/eventing/             @praxedo/infra @praxedo/security
+
+# CI/CD configuration. A bad change here can grant excess permissions to
+# every subsequent run — same review requirement as IAM modules.
+.github/                                @praxedo/infra @praxedo/security
+
+# Anchor docs require the architecture group's eye.
+docs/architecture.md                    @praxedo/infra @praxedo/architecture
+CLAUDE.md                               @praxedo/infra @praxedo/architecture

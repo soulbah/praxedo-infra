@@ -334,7 +334,38 @@ so a single misconfiguration cannot bypass the rest:
 | Plan job posts plan but apply job stays pending | Awaiting GH Environment reviewer approval | reviewer goes to Actions → workflow run → click "Review deployments" |
 | Apply fails with `state lock` | Previous apply crashed without releasing the lock | `terraform force-unlock <LOCK_ID>` from a local checkout (record the LOCK_ID from the error; never blindly unlock without confirming the previous run actually died) |
 
-### 8.5 Local emergency apply
+### 8.5 Branch protection (configure once on the GitHub side)
+
+The workflows are designed assuming the `main` branch is protected with:
+
+- **Require a pull request before merging**: on.
+- **Required reviews**: 1 (or more for sensitive paths via CODEOWNERS).
+- **Require status checks to pass before merging**:
+  - `Static checks`
+  - `plan (dev)`
+  - `plan (prod)`
+  - `lint PR title`
+- **Require branches to be up to date before merging**: on.
+- **Require conversation resolution before merging**: on.
+- **Restrict who can push to matching branches**: empty (no direct
+  pushes; everything via PR).
+- **Allow force pushes**: off.
+- **Allow deletions**: off.
+
+`.github/CODEOWNERS` layers per-path review requirements on top of the
+base review count (storage / secrets / SAs / CI-CD all require the
+security group; architecture docs require the architecture group).
+
+### 8.6 Scheduled drift detection
+
+`.github/workflows/terraform-drift.yml` runs `terraform plan` daily at
+04:30 UTC against `main` for each environment, using the read-only plan
+SA. On a non-zero diff (exit code 2), it opens — or updates — a
+sticky issue `Terraform drift — <env>` with a link to the run. The
+issue closes when the next clean run reports no drift; reopen manually
+if a regression returns.
+
+### 8.7 Local emergency apply
 
 When CI is down and a change is urgent:
 

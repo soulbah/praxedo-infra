@@ -1,0 +1,156 @@
+# Scheduled drift detection. Daily `terraform plan` on main against each
+# environment using the read-only plan SA. Any non-zero diff opens (or
+# updates) a tracking issue so out-of-band changes never go unnoticed.
+#
+# Why this matters: even with strict CI, GCP resources can drift via
+# manual console edits, support cases, or other Terraform runs.
+
+name: Terraform — drift detection
+
+on:
+  schedule:
+    # 04:30 UTC every day — outside business hours, after nightly Cloud SQL
+    # backup window (02:00 UTC).
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: tf-drift-${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  drift:
+    name: drift (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, prod]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Terraform + auth (plan SA, ${{ matrix.env }})
+        uses: ./.github/actions/tf-setup
+        with:
+          env: ${{ matrix.env }}
+          sa-type: plan
+
+      - name: terraform plan (drift check)
+        id: plan
+        working-directory: terraform
+        env:
+          ENV: ${{ matrix.env }}
+        shell: bash
+        run: |
+          set +e
+          terraform plan \
+            -no-color \
+            -lock-timeout=120s \
+            -var-file=envs/${ENV}.tfvars \
+            -detailed-exitcode \
+            > drift-${ENV}.txt 2>&1
+          rc=$?
+          set -e
+          echo "exitcode=${rc}" >> "$GITHUB_OUTPUT"
+          tail -n 100 drift-${ENV}.txt
+          case $rc in
+            0) echo "::notice::No drift in ${ENV}" ;;
+            2) echo "::warning::Drift detected in ${ENV}" ;;
+            *) echo "::error::Drift plan failed for ${ENV} (exit $rc)"; exit $rc ;;
+          esac
+
+      - name: Job summary — drift diff
+        if: always()
+        working-directory: terraform
+        env:
+          ENV: ${{ matrix.env }}
+        shell: bash
+        run: |
+          {
+            echo "## Drift check — \`${ENV}\`"
+            echo
+            echo "Exit code: \`${{ steps.plan.outputs.exitcode }}\` (0 = clean, 2 = drift)"
+            echo
+            echo '```hcl'
+            tail -c 900000 drift-${ENV}.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Find prior drift issue
+        if: steps.plan.outputs.exitcode == '2'
+        id: prior
+        uses: actions/github-script@v7
+        env:
+          ENV: ${{ matrix.env }}
+        with:
+          result-encoding: string
+          script: |
+            const env = process.env.ENV;
+            const marker = `<!-- tf-drift:${env} -->`;
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+              per_page: 100,
+            });
+            const hit = issues.find(i => (i.body || '').includes(marker));
+            return hit ? String(hit.number) : '';
+
+      - name: Open / update drift tracking issue
+        if: steps.plan.outputs.exitcode == '2'
+        uses: actions/github-script@v7
+        env:
+          ENV: ${{ matrix.env }}
+          PRIOR: ${{ steps.prior.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const env = process.env.ENV;
+            const prior = process.env.PRIOR;
+            const runUrl = process.env.RUN_URL;
+            const body = [
+              `<!-- tf-drift:${env} -->`,
+              `Drift detected in \`${env}\` by the scheduled \`terraform plan\` on main.`,
+              ``,
+              `Latest run: ${runUrl}`,
+              ``,
+              `See the Job Summary of the linked run for the full diff. Triage:`,
+              `1. Identify the out-of-band change (Cloud Audit Logs, Activity tab).`,
+              `2. Either revert it manually OR roll the change into a PR.`,
+              `3. Close this issue once the next nightly run reports clean.`,
+            ].join('\n');
+            if (prior) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number(prior),
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `Terraform drift — ${env}`,
+                body,
+                labels: ['drift', `env:${env}`],
+              });
+            }

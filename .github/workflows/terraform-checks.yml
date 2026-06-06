@@ -35,7 +35,11 @@ jobs:
     name: Static checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    # Skip drafts (CI minutes) and fork PRs (no OIDC for untrusted code).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@v4
 
@@ -87,7 +91,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: static
     timeout-minutes: 15
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
 
     # Per-job permissions: id-token for WIF, pull-requests for the sticky
     # plan comment. Everything else stays read-only.
