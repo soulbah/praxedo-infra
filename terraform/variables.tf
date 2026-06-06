@@ -49,3 +49,67 @@ variable "extra_labels" {
     error_message = "Label keys/values must be lowercase alphanumeric, dashes or underscores; keys must start with a letter; max 63 chars."
   }
 }
+
+# ----------------------------------------------------------------------------
+# Network
+# ----------------------------------------------------------------------------
+
+variable "subnet_cidr" {
+  type        = string
+  description = "CIDR for the primary subnet. A /24 covers the planned scale with room for the Cloud SQL peering and the VPC connector to live in distinct ranges."
+  default     = "10.10.0.0/24"
+
+  validation {
+    condition     = can(cidrnetmask(var.subnet_cidr))
+    error_message = "subnet_cidr must be a valid CIDR block."
+  }
+}
+
+variable "connector_cidr" {
+  type        = string
+  description = "CIDR for the Serverless VPC Access connector. Must be a /28 and disjoint from var.subnet_cidr."
+  default     = "10.8.0.0/28"
+
+  validation {
+    condition     = can(cidrnetmask(var.connector_cidr)) && tonumber(split("/", var.connector_cidr)[1]) == 28
+    error_message = "connector_cidr must be a /28 CIDR block."
+  }
+}
+
+variable "private_services_prefix_length" {
+  type        = number
+  description = "Prefix length for the private services peering range used by Cloud SQL."
+  default     = 16
+}
+
+# ----------------------------------------------------------------------------
+# Storage
+# ----------------------------------------------------------------------------
+
+variable "quarantine_ttl_days" {
+  type        = number
+  description = "TTL in days applied to every object in the quarantine bucket. Hard safety net against vendor outages leaving objects behind."
+  default     = 7
+}
+
+variable "clean_noncurrent_ttl_days" {
+  type        = number
+  description = "Retention in days for noncurrent versions of objects in the clean bucket."
+  default     = 30
+}
+
+# ----------------------------------------------------------------------------
+# Artifact Registry
+# ----------------------------------------------------------------------------
+
+variable "registry_tagged_keep_count" {
+  type        = number
+  description = "Number of most-recent tagged images to retain per package."
+  default     = 10
+}
+
+variable "registry_untagged_retention_seconds" {
+  type        = number
+  description = "Age (seconds) above which untagged images are deleted."
+  default     = 604800
+}
