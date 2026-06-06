@@ -7,8 +7,8 @@ Statuses: `todo` · `in-progress` · `blocked` · `done`
 | # | Step | Status | Notes |
 |---|------|--------|-------|
 | 0 | Repo bootstrap (git init, .gitignore, terraform-gcp skill) | done | commit `1283fcd`, skill at `.claude/skills/terraform-gcp/SKILL.md` |
-| 1 | Architecture scoping (`docs/architecture.md`) | in-progress | draft written, awaiting review |
-| 2 | Terraform layout & module skeleton (providers, backend, env stacks, root locals/labels) | todo | depends on §1 validation |
+| 1 | Architecture scoping (`docs/architecture.md`) | done | validated, used as source of truth for §2 |
+| 2 | Terraform layout & module skeleton (providers, backend, env stacks, root locals/labels) | done | root `terraform/` stack: pinned providers (`google` ~> 6.10, `google-beta` ~> 6.10, `random` ~> 3.6), GCS partial backend, workspace→env mapping (`dev`/`prod`) with `check` guardrail, common labels via provider `default_labels`, project-level API enablement, `envs/*.example.tfvars` + `envs/backend-*.example.hcl`, README with bootstrap + daily flow. `terraform fmt` clean, `terraform validate` passes |
 | 3 | Foundation module — VPC, subnet, Cloud NAT, Serverless VPC connector, Artifact Registry | todo | |
 | 4 | Storage module — `quarantine` + `clean` + `frontend-assets` buckets, IAM split, lifecycle rules | todo | enforces invariant §2.3 |
 | 5 | Database module — Cloud SQL PostgreSQL private IP, backups, PITR, users via Secret Manager | todo | |
