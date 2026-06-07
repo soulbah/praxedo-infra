@@ -46,6 +46,15 @@ Two corrections that this loop caught are worth naming, because they are exactly
 
 The chat window accumulates assumptions. The clean check is to drop the chat (or open a fresh session) and re-read the full diff, the architecture, the runbook, the handoff, and the dev requirements, with only `CLAUDE.md` and `docs/` as primer. Anything that does not survive that re-read gets rewritten — that is how the runbook's hard line-wraps got unwrapped, how `dev-requirements.md` was sized for a 3-dev no-ops audience rather than a hypothetical reader, and how the architecture's §1.2 was rewritten with the alternatives explicitly rejected once the scanner runtime model changed.
 
+At the end of the project (`10-final-review.md`) we ran one more pass — this time delegated to a fresh subagent with no chat history, briefed only on the priority checks (secrets hygiene, right-sizing, least privilege, the §2.3 invariant, `terraform fmt`+`validate`). It caught two real deltas the rolling reviews had normalised:
+
+- The Cloud NAT egress IP was `network_tier = "PREMIUM"`. Regional NAT does not need global routing; `STANDARD` is equivalent here and cheaper. Fixed.
+- The `infra-apply` SA carried `roles/iam.roleAdmin`. The stack creates no custom IAM roles, so the permission was unjustified. Dropped.
+
+Both are exactly the kind of small-blast-radius drift that a long session stops seeing. The fresh-context pass is what surfaces them.
+
+After that review, the root `README.md` was written (`11-project-readme.md`) as the evaluator's entry point — solution overview, architecture choices with rejected alternatives **and** trade-offs accepted, and the consolidated hypothesis list.
+
 ---
 
 ## 2. The role of `CLAUDE.md`
@@ -72,6 +81,8 @@ When a prompt produced something at odds with one of these, the correction was a
 - Drafted the architecture document and iterated it under review.
 - Wrote every Terraform module and the two CI/CD workflows.
 - Wrote the runbook, the developer prerequisites, the handoff workflow and its README.
+- Ran the final fresh-context review pass and applied the deltas it surfaced.
+- Drafted the root `README.md` as the evaluator's entry point.
 - Caught syntax mistakes, restructured prose on request, kept `docs/progress.md` synchronized.
 
 **Did not**:
@@ -98,6 +109,9 @@ In execution order:
 | 6 | [`06-app-deploy-foundations.md`](./06-app-deploy-foundations.md) | Application repo handoff: WIF outputs, reference GitHub Actions workflow, variable map. |
 | 7 | [`07-scanner-runtime-model.md`](./07-scanner-runtime-model.md) | Scanner correction: one image, two Spring profiles. Documented as an explicit hypothesis in `architecture.md`. |
 | 8 | [`08-dev-prerequisites.md`](./08-dev-prerequisites.md) | `docs/dev-requirements.md`: actionable checklist + reference multi-stage Dockerfile for the backend team. |
+| 9 | [`09-prompts-readme.md`](./09-prompts-readme.md) | This file — the AI-assisted workflow disclosure. |
+| 10 | [`10-final-review.md`](./10-final-review.md) | Fresh-context independent review pass delegated to a subagent. Caught `network_tier=PREMIUM` on the NAT IP and an unjustified `roles/iam.roleAdmin` on the infra-apply SA; both fixed. |
+| 11 | [`11-project-readme.md`](./11-project-readme.md) | Root `README.md` — solution overview, architecture choices and trade-offs, hypotheses. Also marked `docs/progress.md` complete. |
 
 ---
 
