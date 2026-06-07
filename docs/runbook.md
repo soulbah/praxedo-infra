@@ -352,18 +352,19 @@ The workflows are designed assuming the `main` branch is protected with:
 - **Allow force pushes**: off.
 - **Allow deletions**: off.
 
-`.github/CODEOWNERS` layers per-path review requirements on top of the
-base review count (storage / secrets / SAs / CI-CD all require the
-security group; architecture docs require the architecture group).
+`.github/CODEOWNERS` routes all paths to a single `@praxedo/infra` team —
+3 devs, no separate security/architecture roles. Branch protection's
+"require review from Code Owners" keeps a self-merge of a sensitive IAM
+change off the table.
 
 ### 8.6 Scheduled drift detection
 
 `.github/workflows/terraform-drift.yml` runs `terraform plan` daily at
 04:30 UTC against `main` for each environment, using the read-only plan
-SA. On a non-zero diff (exit code 2), it opens — or updates — a
-sticky issue `Terraform drift — <env>` with a link to the run. The
-issue closes when the next clean run reports no drift; reopen manually
-if a regression returns.
+SA. `-detailed-exitcode` fails the job on a non-empty diff; the run
+shows up red on the Actions tab. Diff is rendered in the Job Summary
+of the failed run. No issue-creation dance — GitHub's UI is the
+signal, weekly review by the 3-dev team picks it up.
 
 ### 8.7 Local emergency apply
 
