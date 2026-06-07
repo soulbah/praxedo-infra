@@ -1,0 +1,4 @@
+Rédige dans docs/ la documentation des pré-requis que les 3 développeurs backend doivent respecter pour que leur service soit déployable sur cette infrastructure. L'équipe n'a pas de profil ops : adopte un ton pédagogue et une checklist actionnable.
+Distingue clairement ce dont l'équipe est propriétaire de ce que la plateforme fournit, en particulier, précise que le workflow de déploiement est fourni par la plateforme et s'appuie sur l'OIDC déjà en place, tandis que le conteneur de leur application reste sous leur responsabilité.
+Accompagne cette doc d'un exemple de référence concret pour la partie qui leur incombe : un conteneur multi-stage, non-root, port configurable, sans état local, adapté à une application Spring Boot. Couvre aussi les endpoints de health checks, la configuration par variables d'environnement, les logs structurés, les secrets via Secret Manager, et le traitement en streaming des uploads volumineux.
+Mets à jour docs/progress.md et commit.
