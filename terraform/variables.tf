@@ -158,15 +158,9 @@ variable "db_user" {
 # Compute (Cloud Run)
 # ----------------------------------------------------------------------------
 
-variable "api_image" {
+variable "app_image" {
   type        = string
-  description = "Initial API container image. Overwritten by the app pipeline (ignored by lifecycle)."
-  default     = "us-docker.pkg.dev/cloudrun/container/hello"
-}
-
-variable "scanner_image" {
-  type        = string
-  description = "Initial scanner container image. Overwritten by the app pipeline."
+  description = "Initial container image used by BOTH Cloud Run services. The app pipeline ships a single image that runs in either api or scanner mode via SPRING_PROFILES_ACTIVE (see docs/architecture.md §1.2). Overwritten by the app pipeline at deploy time (ignored by lifecycle)."
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 

@@ -6,7 +6,51 @@ The infra repo (this one) is responsible for the *foundations* the application p
 
 ---
 
-## 1. What the application pipeline gets
+## 1. The runtime model — one image, two profiles
+
+The existing Praxedo backend is a single Spring Boot service. We deploy it as **two Cloud Run services that share the same container image**, distinguished only by `SPRING_PROFILES_ACTIVE`:
+
+| Cloud Run service | `SPRING_PROFILES_ACTIVE` | Runtime SA | Endpoints exposed | Holds AV API key | Bucket access |
+|---|---|---|---|---|---|
+| `praxedo-file-<env>-api` | `api` | `praxedo-api@…` | `/api/files` upload, `/api/files/{id}/download` | ✗ | write `quarantine`, read `clean` |
+| `praxedo-file-<env>-scanner` | `scanner` | `praxedo-scanner@…` | `/internal/scan` (Pub/Sub push) | ✓ | read+delete `quarantine`, write `clean` |
+
+Why this shape (and not one Spring Boot service for both, or two separate codebases):
+
+- **One Spring Boot codebase** matches the team's existing repo. No code split, no second Maven/Gradle module, no duplicated build, no second Dockerfile.
+- **Two Cloud Run services with two runtime SAs** keeps the §2.3 invariant ("an unscanned file is never downloadable") enforced at the **IAM layer**, not at app-logic layer. The api SA literally has no `storage.objects.get` on `quarantine` and no access to the AV vendor key. A bug in the upload/download code path cannot mint a download URL for an unscanned object.
+
+The team's responsibility on the code side: register beans with `@Profile("api")` or `@Profile("scanner")` for endpoints that should only exist on one service. Shared infrastructure beans (JPA repositories, common services, health checks) stay without a `@Profile` annotation and load in both.
+
+Example controller layout in the backend module:
+
+```java
+@RestController
+@Profile("api")
+public class UploadController {
+    @PostMapping("/api/files")
+    public ResponseEntity<?> upload(...) { ... }
+
+    @GetMapping("/api/files/{id}/download")
+    public ResponseEntity<?> download(...) { ... }
+}
+
+@RestController
+@Profile("scanner")
+public class ScanPushHandler {
+    @PostMapping("/internal/scan")
+    public ResponseEntity<?> handle(@RequestBody PubSubMessage msg) {
+        // Read from quarantine, call AV vendor, on CLEAN verdict:
+        // copy quarantine → clean, delete quarantine, flip DB row.
+    }
+}
+```
+
+The Dockerfile at `backend/Dockerfile` does **not** set the profile. Cloud Run sets `SPRING_PROFILES_ACTIVE=api` or `=scanner` as an environment variable on each service (configured by Terraform on the infra side). The same image binary runs in both modes.
+
+---
+
+## 2. What the application pipeline gets
 
 Provisioned by Terraform on the infra side, exposed as outputs:
 
@@ -15,14 +59,14 @@ Provisioned by Terraform on the infra side, exposed as outputs:
 | `workload_identity_provider` | Fully-qualified WIF provider resource name | `workload_identity_provider:` input to `google-github-actions/auth` |
 | `app_deploy_sa_email` | Email of the deploy SA the GitHub workflow impersonates | `service_account:` input to `google-github-actions/auth` |
 | `artifact_registry_repository_url` | `region-docker.pkg.dev/project/repo` URL | Docker image tag prefix for build/push |
-| `api_service_name` | Cloud Run API service name | `service:` input to `deploy-cloudrun` |
-| `scanner_service_name` | Cloud Run scanner service name | Same |
-| `frontend_bucket_name` | Bucket name behind the CDN | `gsutil rsync` / `gcloud storage rsync` target |
+| `api_service_name` | Cloud Run API service name | `service:` input to `deploy-cloudrun` (api revision) |
+| `scanner_service_name` | Cloud Run scanner service name | `service:` input to `deploy-cloudrun` (scanner revision) |
+| `frontend_bucket_name` | Bucket name behind the CDN | `gcloud storage rsync` target |
 
 What the deploy SA can do (and only this — `roles/owner|editor` is explicitly forbidden by the infra skill):
 
 - Push images to the `praxedo-docker` Artifact Registry repo.
-- Roll new revisions on the two existing Cloud Run services (`roles/run.developer`). It **cannot** create or delete services, edit IAM, change env vars, mount different secrets, or alter ingress settings — those are Terraform-owned.
+- Roll new revisions on the two existing Cloud Run services (`roles/run.developer`). It **cannot** create or delete services, edit IAM, change env vars (including `SPRING_PROFILES_ACTIVE`), mount different secrets, or alter ingress settings — those are Terraform-owned.
 - Impersonate the two runtime SAs (`api`, `scanner`) only as required to set the `runAs` identity on a Cloud Run revision.
 - Upload SPA assets to the frontend bucket.
 
@@ -30,9 +74,9 @@ Anything outside that surface (DB schema migrations, secret rotation, infra chan
 
 ---
 
-## 2. One-time GitHub configuration in the app repo
+## 3. One-time GitHub configuration in the app repo
 
-The reference workflow expects a small set of GitHub *variables* (not secrets — none of these are sensitive). All eight identifiers come from `terraform output` on the infra repo.
+The reference workflow expects a small set of GitHub *variables* (not secrets — none of these are sensitive). All identifiers come from `terraform output` on the infra repo.
 
 In the application repo, go to **Settings → Secrets and variables → Actions → Variables** and create:
 
@@ -62,28 +106,46 @@ The Environment is what gates the prod rollout — the deploy SA itself does not
 
 ---
 
-## 3. Reference workflow
+## 4. Reference workflow
 
-The file is at `.github/workflows/deploy.yml` in this directory. Copy it into the application repo at the same path. The header of the workflow lists every variable it expects and the repo layout it assumes (`backend/api/`, `backend/scanner/`, `frontend/`). Adjust the four `working-directory` / `context` values if your repo layout differs — nothing else inside the workflow should need editing.
+The file is at `.github/workflows/deploy.yml` in this directory. Copy it into the application repo at the same path. The header of the workflow lists every variable it expects and the repo layout it assumes (`backend/` with `backend/Dockerfile`, `frontend/`). Adjust the `context:` and `working-directory:` values if your repo layout differs — nothing else inside the workflow should need editing.
 
-Key design choices in the reference workflow, mirroring the infra-side pipeline conventions:
+Job graph:
+
+```
+        ┌──────────┐
+        │  config  │  resolve per-env values once
+        └────┬─────┘
+             │
+   ┌─────────┼─────────────┐
+   │         │             │
+   ▼         ▼             ▼
+ build    frontend     (frontend runs independent
+   │                    of the backend pipeline)
+   │
+   ├──▶ deploy-api      same image, profile=api
+   └──▶ deploy-scanner  same image, profile=scanner
+```
+
+Key design choices in the reference workflow:
 
 - **WIF only**, no JSON keys. Each job that hits GCP declares `permissions: { id-token: write }` and nothing else broader than needed.
-- **Per-env config resolution in one `config` job**. Downstream jobs read from `needs.config.outputs.*` so there is no `${{ env == 'prod' && ... || ... }}` ladder repeated three times.
-- **Image tag = first 12 chars of the commit SHA** (`${GITHUB_SHA::12}`). Stable, traceable, no monotonic counter to maintain. A floating `latest` tag is also pushed for ergonomics but the deployed revision always references the SHA tag.
-- **Three parallel jobs** (`api`, `scanner`, `frontend`) — none of them blocks the others; a frontend-only change only re-uploads the SPA.
-- **Cloud Run config is not touched on deploy.** No `--update-env-vars`, no `--set-secrets`, no `--ingress`. The deploy SA does not hold permissions to change those, and the Terraform `lifecycle.ignore_changes` block on the Cloud Run resource means new images do not cause TF drift either.
+- **Per-env config resolution in one `config` job**. Downstream jobs read from `needs.config.outputs.*` so there is no `${{ env == 'prod' && ... || ... }}` ladder repeated four times.
+- **Single backend build**. `build` produces one image at `artifact-registry/app:<sha>`. Both `deploy-api` and `deploy-scanner` reference the same digest. No duplicated build, no risk of api and scanner ever running different code.
+- **Image tag = first 12 chars of the commit SHA** (`${GITHUB_SHA::12}`). Stable, traceable. A floating `latest` tag is also pushed for ergonomics but each Cloud Run revision references the SHA tag.
+- **Cloud Run config is not touched on deploy.** No `--update-env-vars`, no `--set-secrets`, no `--ingress`, no `--set-env-vars=SPRING_PROFILES_ACTIVE=...`. The deploy SA does not hold permissions to change those, and the Terraform `lifecycle.ignore_changes` block on the Cloud Run resource means new images do not cause TF drift either. **In particular, `SPRING_PROFILES_ACTIVE` is set by Terraform per service and must not be overridden by the deploy.**
 - **`concurrency` group keyed per env** so two pushes to main do not race their own apply on the same environment, while dev and prod can still proceed independently.
 
 ---
 
-## 4. First deploy checklist (developer side)
+## 5. First deploy checklist (developer side)
 
 1. Push the workflow file to the app repo.
 2. Populate the GitHub variables above.
-3. Create the `dev` and `prod` GitHub Environments with the reviewer + branch rules from §2.
-4. Push to `main` → `dev` deploy runs automatically.
-5. To deploy to prod, either push to `main` (`prod` job waits on reviewer approval) or use `workflow_dispatch` and pick `prod`.
+3. Create the `dev` and `prod` GitHub Environments with the reviewer + branch rules from §3.
+4. Make sure the backend repo has `backend/Dockerfile` (one Dockerfile, root of the backend module) and the two `@Profile` controllers from §1.
+5. Push to `main` → `dev` deploy runs automatically.
+6. To deploy to prod, either push to `main` (`prod` job waits on reviewer approval) or use `workflow_dispatch` and pick `prod`.
 
 If a step fails, the workflow run log is the first stop. Common patterns:
 
@@ -93,16 +155,17 @@ If a step fails, the workflow run log is the first stop. Common patterns:
 | `Could not get the GCS object` or similar 403 on the deploy step | `DEPLOY_SA_*` variable wrong, or AR pull-through not yet propagated | wait 30s and retry; verify the variable matches the infra output |
 | `iam.serviceAccounts.actAs` error on `deploy-cloudrun` | Mismatch between the runtime SA Cloud Run expects and what infra granted impersonation on | check `terraform output api_sa_email` matches the SA actually attached to the service |
 | `Unable to fetch the OIDC token` | `id-token: write` missing on the job, or fork PR | check job permissions; fork PRs cannot federate |
+| Scanner endpoint returns 404 in api, or upload endpoint returns 404 in scanner | A controller is missing its `@Profile("api")` / `@Profile("scanner")` annotation, or the Spring profile env var did not propagate | check `gcloud run services describe <svc> --format='value(template.containers[0].env)'`; the `SPRING_PROFILES_ACTIVE` value must match the expected profile |
 
 ---
 
-## 5. What stays in the infra repo (not the app repo)
+## 6. What stays in the infra repo (not the app repo)
 
 To avoid the two pipelines bleeding into each other:
 
-- Cloud Run **service definitions** (ingress, VPC connector, env vars, secret mounts, runAs identity, max instances) — infra repo only.
+- Cloud Run **service definitions** (ingress, VPC connector, env vars including `SPRING_PROFILES_ACTIVE`, secret mounts, runAs identity, max instances) — infra repo only.
 - IAM bindings, Secret Manager, Cloud SQL, Pub/Sub, buckets, LB, WAF — infra repo only.
-- Container **images and revisions** — app repo only.
+- Container **image and revisions** — app repo only.
 - Frontend bucket **contents** — app repo only.
 - DB **schema migrations** — app repo, but the migration job runs against the private-IP DB via the same VPC connector the API uses; the app pipeline does not provision migration infrastructure.
 

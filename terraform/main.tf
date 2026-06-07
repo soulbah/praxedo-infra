@@ -120,8 +120,7 @@ module "compute" {
   scanner_sa_email = module.service_accounts.scanner_sa_email
   vpc_connector_id = module.network.vpc_connector_id
 
-  api_image     = var.api_image
-  scanner_image = var.scanner_image
+  app_image = var.app_image
 
   api_max_instances       = var.api_max_instances
   scanner_max_instances   = var.scanner_max_instances

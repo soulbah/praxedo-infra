@@ -16,9 +16,14 @@ Guiding constraint: 3 backend developers, no ops profile, a few hundred users, f
 
 ### 1.2 Compute — Antivirus scanner worker
 
-- **Choice**: **Cloud Run** service (separate from the API), triggered asynchronously by Pub/Sub push.
-- **Alternative rejected**: Cloud Run *Functions* (2nd gen) directly on a GCS Eventarc trigger.
-- **Justification**: A dedicated Cloud Run service gives full control over timeout (up to 60 min, useful when the third-party AV API is slow), retry policy, concurrency, and image base — important because the AV call can be long-running. A function would impose a tighter execution model and less ergonomic Java packaging. Keeping the worker as a separate Cloud Run service also enforces clean IAM separation from the API.
+- **Choice**: **Cloud Run** service, separate from the API, **sharing the same container image and the same Spring Boot codebase** as the API. The two services are distinguished by `SPRING_PROFILES_ACTIVE` (`api` vs `scanner`), which Cloud Run injects as an env var on each service. The scanner is invoked asynchronously by Pub/Sub push.
+- **Alternatives rejected**:
+  - Cloud Run *Functions* (2nd gen) on a GCS Eventarc trigger — tighter execution model and less ergonomic Java packaging.
+  - **A single Cloud Run service that handles both upload/download and the Pub/Sub push handler** — collapses the two runtimes into one SA, which would have to hold both `storage.objectViewer` on `quarantine` (to stream the file to the AV vendor) **and** the AV vendor API key (mounted from Secret Manager). At that point the §2.3 invariant ("an unscanned file is never downloadable") would rest on application logic, not IAM. We refuse to take that bet for the central security invariant of this service.
+  - **Two separate Spring Boot codebases / two separate Docker images** — duplicates the build, the test suite, the dependency upgrades, and the on-call surface. The existing app is a single Spring Boot service; forcing a code split on a 3-dev team is unjustified operational burden.
+- **Justification**: A dedicated Cloud Run service gives full control over timeout (up to 60 min, useful when the third-party AV API is slow), retry policy, concurrency, and ingress (`INTERNAL_ONLY` so the scanner URL cannot be hit from the public internet). Reusing the same image as the API keeps the build / test / release loop to a single artefact for the 3-dev team. Splitting only at the runtime / IAM layer is what makes the §2.3 invariant enforceable at the storage IAM boundary (see §2.3).
+
+The application-side responsibility is small: register beans with `@Profile("api")` or `@Profile("scanner")` on the controllers that should only exist on one of the two runtimes. Shared infrastructure beans (JPA, common services) carry no `@Profile` annotation and load in both. Handoff details: `handoff/README.md` §1 + reference workflow.
 
 ### 1.3 Compute — Frontend (React SPA)
 
@@ -147,3 +152,4 @@ Explicit assumptions on which the architecture rests. Each must be confirmed or 
 10. **Cost ceiling**: implicit but expected to be in the low tens of EUR/month at idle, scaling with usage. Sized accordingly.
 11. **Frontend deployment**: SPA built artefact uploaded to a third bucket `frontend-assets` and served via the load balancer; the application repo handles the build/upload step, this repo provisions the bucket + LB + CDN + WIF binding.
 12. **No PII/RGPD-specific encryption requirements** beyond default Google-managed encryption at rest. CMEK can be layered in later if requested.
+13. **Backend codebase has two Spring profiles, `api` and `scanner`, in the same Maven/Gradle module.** The original Praxedo service is one Spring Boot app; the architecture extends it (not splits it) by activating different `@Profile` beans in the two Cloud Run services. The team owns this small code adjustment — see `handoff/README.md` §1. If the team prefers a different code organization (e.g. separate modules in a Maven multi-module build, or even separate repos), the infra side stays unchanged: Cloud Run still runs two services, each pulls the image identified in its revision, and `SPRING_PROFILES_ACTIVE` is an env var that any layout can interpret.

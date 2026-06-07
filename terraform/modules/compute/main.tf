@@ -31,7 +31,7 @@ resource "google_cloud_run_v2_service" "api" {
     }
 
     containers {
-      image = var.api_image
+      image = var.app_image
 
       ports {
         container_port = 8080
@@ -42,6 +42,15 @@ resource "google_cloud_run_v2_service" "api" {
           cpu    = var.api_cpu
           memory = var.api_memory
         }
+      }
+
+      # Single codebase, two runtime profiles. The image itself is the same
+      # as the scanner service below; only the profile differs, which lets
+      # Spring activate the api endpoints + beans and ignore the scanner
+      # ones. See docs/architecture.md §1.2.
+      env {
+        name  = "SPRING_PROFILES_ACTIVE"
+        value = var.api_profile
       }
 
       env {
@@ -125,13 +134,20 @@ resource "google_cloud_run_v2_service" "scanner" {
     }
 
     containers {
-      image = var.scanner_image
+      image = var.app_image
 
       resources {
         limits = {
           cpu    = var.scanner_cpu
           memory = var.scanner_memory
         }
+      }
+
+      # Same image as the api service above; the profile is what switches
+      # the runtime to Pub/Sub push handler mode.
+      env {
+        name  = "SPRING_PROFILES_ACTIVE"
+        value = var.scanner_profile
       }
 
       env {

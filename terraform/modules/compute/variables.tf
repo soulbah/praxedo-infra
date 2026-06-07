@@ -28,16 +28,22 @@ variable "vpc_connector_id" {
   description = "Serverless VPC Access connector ID. Both services use it for outbound."
 }
 
-variable "api_image" {
+variable "app_image" {
   type        = string
-  description = "Container image for the API. The app pipeline owns this — the value is ignored by lifecycle once first applied."
+  description = "Container image used as the initial revision for BOTH Cloud Run services (api + scanner). Same image, two runtime profiles distinguished by SPRING_PROFILES_ACTIVE. Lifecycle ignores subsequent changes — the app pipeline owns image promotion."
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
-variable "scanner_image" {
+variable "api_profile" {
   type        = string
-  description = "Container image for the scanner. Same lifecycle handling as api_image."
-  default     = "us-docker.pkg.dev/cloudrun/container/hello"
+  description = "Spring profile activated on the API service. Selects upload/download endpoints and the api runtime SA's authority surface."
+  default     = "api"
+}
+
+variable "scanner_profile" {
+  type        = string
+  description = "Spring profile activated on the scanner service. Selects the Pub/Sub push handler endpoint and the scanner SA's authority surface."
+  default     = "scanner"
 }
 
 variable "api_cpu" {

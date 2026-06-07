@@ -4,10 +4,21 @@
 # Drop this file into the application repository at:
 #   .github/workflows/deploy.yml
 #
-# It builds the API + scanner container images, pushes them to Artifact
-# Registry, rolls new Cloud Run revisions, and uploads the SPA build to the
-# frontend bucket. Authentication uses Workload Identity Federation only —
-# no JSON service-account key is ever exchanged.
+# Architecture: ONE Spring Boot codebase, ONE container image, deployed to
+# TWO Cloud Run services that differ only by SPRING_PROFILES_ACTIVE:
+#
+#   - api      → exposes upload + download endpoints, runs as the api SA
+#   - scanner  → handles the Pub/Sub push of GCS finalize events, calls the
+#                AV vendor, promotes quarantine → clean, runs as the
+#                scanner SA (the only SA holding the AV API key + write on
+#                the clean bucket)
+#
+# The image is built once. The two services pull the same digest and
+# Spring activates the right beans per profile (see backend/README.md in
+# the app repo for the profile layout).
+#
+# Authentication uses Workload Identity Federation only — no JSON service
+# account key is ever exchanged.
 #
 # ----------------------------------------------------------------------------
 # REQUIRED GITHUB CONFIGURATION (Settings → Secrets and variables → Actions)
@@ -43,8 +54,8 @@
 # ----------------------------------------------------------------------------
 # REQUIRED REPO LAYOUT (adjust the paths below if your repo differs)
 #
-#   backend/api/      Dockerfile + Spring Boot sources
-#   backend/scanner/  Dockerfile + scanner sources
+#   backend/          Spring Boot sources + single Dockerfile at backend/Dockerfile
+#                     Two Spring profiles in the same module: `api`, `scanner`
 #   frontend/         React app; `npm run build` outputs to frontend/dist
 #
 # ============================================================================
@@ -91,6 +102,7 @@ jobs:
       scanner_service: ${{ steps.set.outputs.scanner_service }}
       frontend_bucket: ${{ steps.set.outputs.frontend_bucket }}
       image_tag: ${{ steps.set.outputs.image_tag }}
+      image_ref: ${{ steps.set.outputs.image_ref }}
     steps:
       - id: set
         env:
@@ -100,7 +112,8 @@ jobs:
           set -euo pipefail
           echo "env=${ENV}" >> "$GITHUB_OUTPUT"
           echo "region=${{ vars.GCP_REGION }}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          TAG="${GITHUB_SHA::12}"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
           if [[ "$ENV" == "prod" ]]; then
             echo "project_id=${{ vars.GCP_PROJECT_ID_PROD }}"           >> "$GITHUB_OUTPUT"
             echo "wif_provider=${{ vars.WIF_PROVIDER_PROD }}"           >> "$GITHUB_OUTPUT"
@@ -109,6 +122,7 @@ jobs:
             echo "api_service=${{ vars.API_SERVICE_PROD }}"             >> "$GITHUB_OUTPUT"
             echo "scanner_service=${{ vars.SCANNER_SERVICE_PROD }}"     >> "$GITHUB_OUTPUT"
             echo "frontend_bucket=${{ vars.FRONTEND_BUCKET_PROD }}"     >> "$GITHUB_OUTPUT"
+            echo "image_ref=${{ vars.ARTIFACT_REGISTRY_PROD }}/app:${TAG}" >> "$GITHUB_OUTPUT"
           else
             echo "project_id=${{ vars.GCP_PROJECT_ID_DEV }}"            >> "$GITHUB_OUTPUT"
             echo "wif_provider=${{ vars.WIF_PROVIDER_DEV }}"            >> "$GITHUB_OUTPUT"
@@ -117,16 +131,18 @@ jobs:
             echo "api_service=${{ vars.API_SERVICE_DEV }}"              >> "$GITHUB_OUTPUT"
             echo "scanner_service=${{ vars.SCANNER_SERVICE_DEV }}"      >> "$GITHUB_OUTPUT"
             echo "frontend_bucket=${{ vars.FRONTEND_BUCKET_DEV }}"      >> "$GITHUB_OUTPUT"
+            echo "image_ref=${{ vars.ARTIFACT_REGISTRY_DEV }}/app:${TAG}" >> "$GITHUB_OUTPUT"
           fi
 
   # --------------------------------------------------------------------------
-  # Build + push the API container, then deploy a new Cloud Run revision.
+  # Build the single backend image and push it. Both Cloud Run services
+  # (api + scanner) will pull this same digest below.
   # --------------------------------------------------------------------------
-  api:
-    name: API — build, push, deploy (${{ needs.config.outputs.env }})
+  build:
+    name: Backend — build + push image (${{ needs.config.outputs.env }})
     runs-on: ubuntu-latest
     needs: config
-    timeout-minutes: 20
+    timeout-minutes: 25
     environment: ${{ needs.config.outputs.env }}
     permissions:
       contents: read
@@ -149,34 +165,60 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build + push API image
+      - name: Build + push backend image
         uses: docker/build-push-action@v6
         with:
-          context: backend/api
+          context: backend
           push: true
           provenance: false
           tags: |
-            ${{ needs.config.outputs.artifact_registry }}/api:${{ needs.config.outputs.image_tag }}
-            ${{ needs.config.outputs.artifact_registry }}/api:latest
+            ${{ needs.config.outputs.image_ref }}
+            ${{ needs.config.outputs.artifact_registry }}/app:latest
+
+  # --------------------------------------------------------------------------
+  # Deploy the same image to the API Cloud Run service. SPRING_PROFILES_ACTIVE
+  # is set on the service by Terraform, so the deploy SA does not (and
+  # cannot) override it here.
+  # --------------------------------------------------------------------------
+  deploy-api:
+    name: API — deploy revision (${{ needs.config.outputs.env }})
+    runs-on: ubuntu-latest
+    needs: [config, build]
+    timeout-minutes: 10
+    environment: ${{ needs.config.outputs.env }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ needs.config.outputs.wif_provider }}
+          service_account: ${{ needs.config.outputs.deploy_sa }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ needs.config.outputs.project_id }}
 
       - name: Deploy Cloud Run revision (API)
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ needs.config.outputs.api_service }}
           region: ${{ needs.config.outputs.region }}
-          image: ${{ needs.config.outputs.artifact_registry }}/api:${{ needs.config.outputs.image_tag }}
-          # No flags / env / secrets here — those are owned by Terraform.
-          # The deploy SA only has roles/run.developer, which permits
-          # revision rollout but not service-level config edits.
+          image: ${{ needs.config.outputs.image_ref }}
 
   # --------------------------------------------------------------------------
-  # Same flow for the scanner. Parallel to `api` once config resolves.
+  # Deploy the SAME image to the scanner Cloud Run service. Spring activates
+  # a different profile here (set by Terraform on the service), so the
+  # runtime only exposes the Pub/Sub push handler.
   # --------------------------------------------------------------------------
-  scanner:
-    name: Scanner — build, push, deploy (${{ needs.config.outputs.env }})
+  deploy-scanner:
+    name: Scanner — deploy revision (${{ needs.config.outputs.env }})
     runs-on: ubuntu-latest
-    needs: config
-    timeout-minutes: 20
+    needs: [config, build]
+    timeout-minutes: 10
     environment: ${{ needs.config.outputs.env }}
     permissions:
       contents: read
@@ -194,30 +236,16 @@ jobs:
         with:
           project_id: ${{ needs.config.outputs.project_id }}
 
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ needs.config.outputs.region }}-docker.pkg.dev --quiet
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build + push scanner image
-        uses: docker/build-push-action@v6
-        with:
-          context: backend/scanner
-          push: true
-          provenance: false
-          tags: |
-            ${{ needs.config.outputs.artifact_registry }}/scanner:${{ needs.config.outputs.image_tag }}
-            ${{ needs.config.outputs.artifact_registry }}/scanner:latest
-
       - name: Deploy Cloud Run revision (scanner)
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ needs.config.outputs.scanner_service }}
           region: ${{ needs.config.outputs.region }}
-          image: ${{ needs.config.outputs.artifact_registry }}/scanner:${{ needs.config.outputs.image_tag }}
+          image: ${{ needs.config.outputs.image_ref }}
 
   # --------------------------------------------------------------------------
   # Build the SPA and rsync it to the frontend bucket fronting the CDN.
+  # Independent of the backend pipeline above.
   # --------------------------------------------------------------------------
   frontend:
     name: Frontend — build, upload (${{ needs.config.outputs.env }})
