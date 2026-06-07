@@ -1,0 +1,3 @@
+Prépare maintenant tout ce qu'il faut pour que l'équipe de développement déploie son application sans jamais manipuler de credentials GCP, et fournis-leur un point de départ réutilisable qu'ils intégreront dans leur propre dépôt.
+Respecte strictement la séparation des responsabilités : on provisionne les fondations d'authentification et on standardise leur déploiement via la fédération d'identité, mais on ne déploie pas l'application à leur place. Le workflow de référence que tu fournis doit être prêt à l'emploi, avec les variables que l'équipe devra renseigner clairement identifiées en tête de fichier.
+Mets à jour docs/progress.md et commit.
