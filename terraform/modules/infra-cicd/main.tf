@@ -33,7 +33,6 @@ locals {
     "roles/resourcemanager.projectIamAdmin",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.workloadIdentityPoolAdmin",
-    "roles/iam.roleAdmin",
     "roles/compute.networkAdmin",
     "roles/compute.securityAdmin",
     "roles/compute.loadBalancerAdmin",
