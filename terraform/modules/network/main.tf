@@ -37,14 +37,15 @@ resource "google_compute_router" "nat" {
 }
 
 # Static egress IP so the AV vendor can whitelist a single address. Manual
-# allocation pins it across NAT recreations.
+# allocation pins it across NAT recreations. STANDARD tier is sufficient for
+# regional NAT egress and cheaper than PREMIUM (no global routing needed).
 resource "google_compute_address" "nat" {
   project = var.project_id
   name    = "${var.name_prefix}-nat-ip"
   region  = var.region
 
   address_type = "EXTERNAL"
-  network_tier = "PREMIUM"
+  network_tier = "STANDARD"
 }
 
 resource "google_compute_router_nat" "nat" {
