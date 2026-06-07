@@ -1,0 +1,2 @@
+En relisant l'énoncé, je crois qu'on s'est trompé sur le scanner : c'est le service Spring Boot existant qui appelle l'API antivirus tierce, pas un service séparé qu'on aurait à imposer à l'équipe. Garde un seul codebase et un seul build côté devs, mais conserve la séparation runtime / IAM qui garantit l'invariant §2.3 au niveau du stockage.
+Documente l'hypothèse correspondante dans `docs/architecture.md` §3, mets `docs/progress.md` à jour et commit.
