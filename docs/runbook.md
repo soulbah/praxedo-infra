@@ -83,21 +83,23 @@ gcloud compute ssl-certificates describe \
 
 ## 5. Application pipeline handoff
 
-The infra repo provisions but does **not** deploy. The app repo's GitHub Actions authenticates via WIF. Two outputs feed the auth step:
+The infra repo provisions but does **not** deploy. A complete, drop-in starting point for the application repo lives in `handoff/` at the root of this repo:
+
+- `handoff/.github/workflows/deploy.yml` — reference GitHub Actions workflow (build + push images, roll Cloud Run revisions, upload SPA). Uses Workload Identity Federation only; no JSON keys.
+- `handoff/README.md` — list of GitHub variables to set in the app repo, GitHub Environment configuration (reviewers, branch rules), repo layout expected, first-deploy checklist.
+
+The application team copies `deploy.yml` into their `.github/workflows/` and populates the GitHub variables listed in the handoff README from these Terraform outputs:
 
 ```sh
-terraform output workload_identity_provider
-terraform output app_deploy_sa_email
+terraform output workload_identity_provider          # → WIF_PROVIDER_<ENV>
+terraform output app_deploy_sa_email                 # → DEPLOY_SA_<ENV>
+terraform output artifact_registry_repository_url    # → ARTIFACT_REGISTRY_<ENV>
+terraform output api_service_name                    # → API_SERVICE_<ENV>
+terraform output scanner_service_name                # → SCANNER_SERVICE_<ENV>
+terraform output frontend_bucket_name                # → FRONTEND_BUCKET_<ENV>
 ```
 
-App repo workflow example:
-
-```yaml
-- uses: google-github-actions/auth@v2
-  with:
-    workload_identity_provider: ${{ steps.tf.outputs.workload_identity_provider }}
-    service_account:            ${{ steps.tf.outputs.app_deploy_sa_email }}
-```
+The deploy SA can push images, roll revisions on the two existing services, and upload SPA assets. It cannot create or delete services, edit IAM, change env vars, or alter ingress — those are Terraform-owned. The Cloud Run resources carry `lifecycle.ignore_changes` on the image so the app pipeline rolls revisions without causing TF drift.
 
 No JSON keys are exported, ever — only OIDC token exchange.
 

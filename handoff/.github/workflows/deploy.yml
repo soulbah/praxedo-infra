@@ -1,0 +1,265 @@
+# ============================================================================
+# Praxedo file service — application deploy pipeline (REFERENCE)
+#
+# Drop this file into the application repository at:
+#   .github/workflows/deploy.yml
+#
+# It builds the API + scanner container images, pushes them to Artifact
+# Registry, rolls new Cloud Run revisions, and uploads the SPA build to the
+# frontend bucket. Authentication uses Workload Identity Federation only —
+# no JSON service-account key is ever exchanged.
+#
+# ----------------------------------------------------------------------------
+# REQUIRED GITHUB CONFIGURATION (Settings → Secrets and variables → Actions)
+#
+# Repository VARIABLES (not secrets — these are non-sensitive identifiers):
+#
+#   GCP_PROJECT_ID_DEV          praxedo-file-dev
+#   GCP_PROJECT_ID_PROD         praxedo-file-prod
+#   GCP_REGION                  europe-west1
+#
+#   # Take these from the infra repo's `terraform output` per env:
+#   WIF_PROVIDER_DEV            output `workload_identity_provider`  (dev workspace)
+#   WIF_PROVIDER_PROD           output `workload_identity_provider`  (prod workspace)
+#   DEPLOY_SA_DEV               output `app_deploy_sa_email`         (dev workspace)
+#   DEPLOY_SA_PROD              output `app_deploy_sa_email`         (prod workspace)
+#
+#   ARTIFACT_REGISTRY_DEV       output `artifact_registry_repository_url`  (dev)
+#   ARTIFACT_REGISTRY_PROD      output `artifact_registry_repository_url`  (prod)
+#
+#   API_SERVICE_DEV             output `api_service_name`            (dev)
+#   API_SERVICE_PROD            output `api_service_name`            (prod)
+#   SCANNER_SERVICE_DEV         output `scanner_service_name`        (dev)
+#   SCANNER_SERVICE_PROD        output `scanner_service_name`        (prod)
+#
+#   FRONTEND_BUCKET_DEV         output `frontend_bucket_name`        (dev)
+#   FRONTEND_BUCKET_PROD        output `frontend_bucket_name`        (prod)
+#
+# Repository SECRETS: none. Everything above is non-sensitive.
+#
+# GitHub Environments (Settings → Environments): create `dev` and `prod`.
+# Require ≥1 reviewer on `prod`. Restrict both to deployment branch `main`.
+#
+# ----------------------------------------------------------------------------
+# REQUIRED REPO LAYOUT (adjust the paths below if your repo differs)
+#
+#   backend/api/      Dockerfile + Spring Boot sources
+#   backend/scanner/  Dockerfile + scanner sources
+#   frontend/         React app; `npm run build` outputs to frontend/dist
+#
+# ============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-deploy-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Compute per-env values from GitHub variables once, then expose them as
+  # job outputs. Keeps the rest of the workflow free of `${{ env == 'prod' &&
+  # ... || ... }}` ladders.
+  # --------------------------------------------------------------------------
+  config:
+    name: Resolve env config
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      env: ${{ steps.set.outputs.env }}
+      project_id: ${{ steps.set.outputs.project_id }}
+      region: ${{ steps.set.outputs.region }}
+      wif_provider: ${{ steps.set.outputs.wif_provider }}
+      deploy_sa: ${{ steps.set.outputs.deploy_sa }}
+      artifact_registry: ${{ steps.set.outputs.artifact_registry }}
+      api_service: ${{ steps.set.outputs.api_service }}
+      scanner_service: ${{ steps.set.outputs.scanner_service }}
+      frontend_bucket: ${{ steps.set.outputs.frontend_bucket }}
+      image_tag: ${{ steps.set.outputs.image_tag }}
+    steps:
+      - id: set
+        env:
+          ENV: ${{ github.event.inputs.environment || 'dev' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "env=${ENV}" >> "$GITHUB_OUTPUT"
+          echo "region=${{ vars.GCP_REGION }}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          if [[ "$ENV" == "prod" ]]; then
+            echo "project_id=${{ vars.GCP_PROJECT_ID_PROD }}"           >> "$GITHUB_OUTPUT"
+            echo "wif_provider=${{ vars.WIF_PROVIDER_PROD }}"           >> "$GITHUB_OUTPUT"
+            echo "deploy_sa=${{ vars.DEPLOY_SA_PROD }}"                 >> "$GITHUB_OUTPUT"
+            echo "artifact_registry=${{ vars.ARTIFACT_REGISTRY_PROD }}" >> "$GITHUB_OUTPUT"
+            echo "api_service=${{ vars.API_SERVICE_PROD }}"             >> "$GITHUB_OUTPUT"
+            echo "scanner_service=${{ vars.SCANNER_SERVICE_PROD }}"     >> "$GITHUB_OUTPUT"
+            echo "frontend_bucket=${{ vars.FRONTEND_BUCKET_PROD }}"     >> "$GITHUB_OUTPUT"
+          else
+            echo "project_id=${{ vars.GCP_PROJECT_ID_DEV }}"            >> "$GITHUB_OUTPUT"
+            echo "wif_provider=${{ vars.WIF_PROVIDER_DEV }}"            >> "$GITHUB_OUTPUT"
+            echo "deploy_sa=${{ vars.DEPLOY_SA_DEV }}"                  >> "$GITHUB_OUTPUT"
+            echo "artifact_registry=${{ vars.ARTIFACT_REGISTRY_DEV }}"  >> "$GITHUB_OUTPUT"
+            echo "api_service=${{ vars.API_SERVICE_DEV }}"              >> "$GITHUB_OUTPUT"
+            echo "scanner_service=${{ vars.SCANNER_SERVICE_DEV }}"      >> "$GITHUB_OUTPUT"
+            echo "frontend_bucket=${{ vars.FRONTEND_BUCKET_DEV }}"      >> "$GITHUB_OUTPUT"
+          fi
+
+  # --------------------------------------------------------------------------
+  # Build + push the API container, then deploy a new Cloud Run revision.
+  # --------------------------------------------------------------------------
+  api:
+    name: API — build, push, deploy (${{ needs.config.outputs.env }})
+    runs-on: ubuntu-latest
+    needs: config
+    timeout-minutes: 20
+    environment: ${{ needs.config.outputs.env }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ needs.config.outputs.wif_provider }}
+          service_account: ${{ needs.config.outputs.deploy_sa }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ needs.config.outputs.project_id }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ needs.config.outputs.region }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build + push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend/api
+          push: true
+          provenance: false
+          tags: |
+            ${{ needs.config.outputs.artifact_registry }}/api:${{ needs.config.outputs.image_tag }}
+            ${{ needs.config.outputs.artifact_registry }}/api:latest
+
+      - name: Deploy Cloud Run revision (API)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ needs.config.outputs.api_service }}
+          region: ${{ needs.config.outputs.region }}
+          image: ${{ needs.config.outputs.artifact_registry }}/api:${{ needs.config.outputs.image_tag }}
+          # No flags / env / secrets here — those are owned by Terraform.
+          # The deploy SA only has roles/run.developer, which permits
+          # revision rollout but not service-level config edits.
+
+  # --------------------------------------------------------------------------
+  # Same flow for the scanner. Parallel to `api` once config resolves.
+  # --------------------------------------------------------------------------
+  scanner:
+    name: Scanner — build, push, deploy (${{ needs.config.outputs.env }})
+    runs-on: ubuntu-latest
+    needs: config
+    timeout-minutes: 20
+    environment: ${{ needs.config.outputs.env }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ needs.config.outputs.wif_provider }}
+          service_account: ${{ needs.config.outputs.deploy_sa }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ needs.config.outputs.project_id }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ needs.config.outputs.region }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build + push scanner image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend/scanner
+          push: true
+          provenance: false
+          tags: |
+            ${{ needs.config.outputs.artifact_registry }}/scanner:${{ needs.config.outputs.image_tag }}
+            ${{ needs.config.outputs.artifact_registry }}/scanner:latest
+
+      - name: Deploy Cloud Run revision (scanner)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ needs.config.outputs.scanner_service }}
+          region: ${{ needs.config.outputs.region }}
+          image: ${{ needs.config.outputs.artifact_registry }}/scanner:${{ needs.config.outputs.image_tag }}
+
+  # --------------------------------------------------------------------------
+  # Build the SPA and rsync it to the frontend bucket fronting the CDN.
+  # --------------------------------------------------------------------------
+  frontend:
+    name: Frontend — build, upload (${{ needs.config.outputs.env }})
+    runs-on: ubuntu-latest
+    needs: config
+    timeout-minutes: 15
+    environment: ${{ needs.config.outputs.env }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install + build SPA
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ needs.config.outputs.wif_provider }}
+          service_account: ${{ needs.config.outputs.deploy_sa }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ needs.config.outputs.project_id }}
+
+      - name: Sync build to frontend bucket
+        env:
+          BUCKET: ${{ needs.config.outputs.frontend_bucket }}
+        run: |
+          # -d deletes stale objects; -c uses CRC32C for change detection so
+          # unchanged assets keep their existing cache headers.
+          gcloud storage rsync ./frontend/dist gs://${BUCKET} \
+            --recursive \
+            --delete-unmatched-destination-objects \
+            --cache-control="public, max-age=3600"
